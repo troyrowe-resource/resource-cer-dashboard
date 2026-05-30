@@ -1,0 +1,47 @@
+{
+  "name": "resource-cer-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ReSource - Solar and Battery Installations dashboard (Clean Energy Regulator data)",
+  "scripts": {
+    "fetch:geo": "node scripts/fetch-geo.mjs",
+    "build:data": "tsx scripts/build-data.ts",
+    "verify:data": "tsx scripts/verify-data.ts",
+    "prebuild": "npm run build:data",
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "test": "node --test tests/data.test.ts tests/agg.test.ts tests/build.test.ts",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "maplibre-gl": "^5.1.0",
+    "next": "^15.1.6",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.10.1",
+    "@eslint/js": "^9.39.4",
+    "@playwright/test": "^1.49.1",
+    "@tailwindcss/postcss": "^4.0.0",
+    "@types/geojson": "^7946.0.15",
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "axe-core": "^4.10.2",
+    "eslint": "^9.39.4",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "globals": "^17.6.0",
+    "postcss": "^8.5.1",
+    "tailwindcss": "^4.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.60.0",
+    "xlsx": "^0.18.5"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
