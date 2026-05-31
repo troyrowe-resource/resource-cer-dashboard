@@ -52,6 +52,7 @@ export default function Dashboard() {
   const [fromYM, setFromYM] = useState("");
   const [toYM, setToYM] = useState("");
   const [life, setLife] = useState(25);
+  const [vintageUnit, setVintageUnit] = useState<"installs" | "capacity" | "panels">("installs");
 
   useEffect(() => {
     loadData().then(setData).catch((e) => setErr(String(e?.message ?? e)));
@@ -69,6 +70,7 @@ export default function Dashboard() {
     setSel({});
     setGran("month");
     setLife(m.assumedLifeYears);
+    setVintageUnit("installs");
   }, [view, data]);
 
   const activeCodes = STATE_CODES.filter((c) => sel[c]);
@@ -175,7 +177,13 @@ export default function Dashboard() {
   }));
 
   const vintageYearly = byYear(agg.months);
-  const vintageField: "installs" | "capacity" = metric === "capacity" ? "capacity" : "installs";
+  // The vintage view has its own count unit (Systems / Panels / Capacity), independent of the
+  // global metric. Panels are solar-only and estimated; never offered for battery.
+  const vintField: "installs" | "capacity" | "panels" = view === "battery" && vintageUnit === "panels" ? "installs" : vintageUnit;
+  const vintageOpts: { value: "installs" | "capacity" | "panels"; label: string }[] =
+    view === "solar"
+      ? [{ value: "installs", label: "Systems" }, { value: "panels", label: "Panels" }, { value: "capacity", label: "Capacity" }]
+      : [{ value: "installs", label: "Batteries" }, { value: "capacity", label: "Capacity" }];
 
   return (
     <div className="rs-app density-regular">
@@ -273,16 +281,29 @@ export default function Dashboard() {
         <Panel
           full
           title="Installation vintage and waste arisings"
-          sub={"Installs by year of installation, with end-of-life band and forward waste-arisings projection (arisings = installs " + life + " years earlier)."}
+          sub={"By year of installation, with an end-of-life band and a forward waste-arisings projection (arisings = the cohort installed " + life + " years earlier)."}
           action={
-            <div className="life-ctl">
-              <label htmlFor="life-slider" className="fk">Assumed life</label>
-              <input id="life-slider" type="range" min={meta.lifeMin} max={meta.lifeMax} step={1} value={life} onChange={(e) => setLife(Number(e.target.value))} />
-              <span className="life-val">{life} yrs</span>
+            <div style={{ display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+              <Segmented value={vintField} onChange={setVintageUnit} ariaLabel="Vintage count unit" options={vintageOpts} />
+              <div className="life-ctl">
+                <label htmlFor="life-slider" className="fk">Assumed life</label>
+                <input id="life-slider" type="range" min={meta.lifeMin} max={meta.lifeMax} step={1} value={life} onChange={(e) => setLife(Number(e.target.value))} />
+                <span className="life-val">{life} yrs</span>
+              </div>
             </div>
           }
         >
-          <Vintage yearly={vintageYearly} field={vintageField} life={life} band={meta.bandYears} nowYear={nowYear} unitName={meta.unitName} sizeUnit={meta.sizeUnit} height={310} />
+          <Vintage yearly={vintageYearly} field={vintField} life={life} band={meta.bandYears} nowYear={nowYear} unitName={meta.unitName} sizeUnit={meta.sizeUnit} height={310} />
+          {vintField === "panels" && (
+            <div className="note" style={{ marginTop: 12 }}>
+              <span className="note-mark" aria-hidden="true">i</span>
+              <span>
+                Panel counts are <strong>estimated</strong> - the CER records system capacity, not panel numbers. We divide installed
+                capacity by the average module wattage for each install year (about 80 W in 2001 rising to about 440 W in 2026), so
+                treat these as indicative of the number of panels reaching end-of-life.
+              </span>
+            </div>
+          )}
         </Panel>
       </main>
 

@@ -10,7 +10,7 @@ import { arisingsSeries, commas, capacity } from "@/lib/cer";
 
 interface VintageProps {
   yearly: YearPoint[]; // installs/capacity by install year (aggregated over selection+range)
-  field: "installs" | "capacity";
+  field: "installs" | "capacity" | "panels";
   life: number; // assumed service life in years (slider-driven)
   band: number; // width of the "approaching end-of-life" band
   nowYear: number; // data-as-at year, for the NOW marker
@@ -96,7 +96,7 @@ export function Vintage(props: VintageProps) {
   }
 
   const hov = hi >= 0 ? series[hi] : null;
-  const fmt = field === "installs" ? (v: number) => commas(v) : (v: number) => capacity(v, sizeUnit);
+  const fmt = field === "capacity" ? (v: number) => capacity(v, sizeUnit) : (v: number) => commas(v);
 
   return (
     <div ref={ref} style={{ position: "relative", width: "100%" }}>
@@ -202,7 +202,7 @@ export function Vintage(props: VintageProps) {
 
       {/* legend */}
       <div style={{ display: "flex", gap: 18, flexWrap: "wrap", padding: "2px 0 0 50px", fontSize: 11, color: C.mute }}>
-        <LegendItem color={C.base} label="Installs by year" />
+        <LegendItem color={C.base} label={field === "panels" ? "Panels by year" : field === "capacity" ? "Capacity by year" : "Installs by year"} />
         <LegendItem color={C.orange} label="Approaching end-of-life" />
         <LegendItem color={C.orangeSoft} label={`Past assumed life (${life}y)`} />
         <LegendItem color={C.orange} dashed label="Projected waste arisings" />

@@ -110,8 +110,9 @@ body {
 .fgrp { display: flex; flex-direction: column; gap: 7px; }
 .fk { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--fg-on-dark-dim); font-weight: 800; }
 .pill { display: inline-flex; align-items: center; height: 32px; padding: 0 14px; border-radius: var(--r-sm); font-size: 13px; font-weight: 700; }
-/* text darkened from --brand-orange-press #D67B00 (2.86:1) to clear WCAG AA on the cream pill */
-.pill--ds { background: var(--brand-orange-tint); color: #8F5200; }
+/* dataset indicator - dark tag with an orange accent so it matches the rest of the dark UI
+   (was a cream pill that stood out; orange-on-dark also clears WCAG AA comfortably) */
+.pill--ds { background: var(--panel-2); border: 1px solid var(--brand-orange); color: var(--brand-orange); }
 
 .chips { display: flex; gap: 6px; flex-wrap: wrap; }
 .chip {

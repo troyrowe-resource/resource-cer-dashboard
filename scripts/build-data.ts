@@ -43,7 +43,7 @@ export const CONFIG = {
   outDir: "public/data",
   incompleteMonths: 3, // trailing months under-counted by the 12-month STC window
   life: {
-    solar: { default: 25, band: 5, min: 20, max: 35 },
+    solar: { default: 25, band: 5, min: 10, max: 25 },
     battery: { default: 15, band: 3, min: 10, max: 25 },
   },
   recon: { capacityAbsTolerance: 0.5 }, // kW per-postcode; installs must match exactly

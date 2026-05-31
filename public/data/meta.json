@@ -2,7 +2,7 @@
   "dataAsAt": "30 Apr 2026",
   "dataAsAtISO": "2026-04-30",
   "historicSourceDate": "31 Mar 2024",
-  "generatedAt": "2026-05-30T12:51:18.094Z",
+  "generatedAt": "2026-05-31T00:36:10.682Z",
   "datasets": {
     "solar": {
       "key": "solar",
@@ -320,8 +320,8 @@
       "incompleteMonths": 3,
       "assumedLifeYears": 25,
       "bandYears": 5,
-      "lifeMin": 20,
-      "lifeMax": 35
+      "lifeMin": 10,
+      "lifeMax": 25
     },
     "battery": {
       "key": "battery",

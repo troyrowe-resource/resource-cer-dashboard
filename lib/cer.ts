@@ -110,13 +110,41 @@ export interface VintageYear {
 }
 
 /**
+ * Average residential PV module wattage (W) by install year in Australia. The CER data has
+ * no panel counts, so the "estimated panels" view derives them as capacity / module wattage.
+ * This is a modelled industry estimate (sources: APVI, Clean Energy Council, energy.gov.au,
+ * SolarQuotes); the trend - roughly 80 W in 2001 rising to ~440 W by 2025 - is well documented
+ * even though no single source publishes an exact national year-by-year average.
+ */
+export const MODULE_WATTS_BY_YEAR: Record<number, number> = {
+  2001: 80, 2002: 85, 2003: 90, 2004: 100, 2005: 110, 2006: 120, 2007: 135, 2008: 150,
+  2009: 165, 2010: 180, 2011: 190, 2012: 200, 2013: 220, 2014: 240, 2015: 255, 2016: 265,
+  2017: 280, 2018: 300, 2019: 330, 2020: 350, 2021: 375, 2022: 400, 2023: 415, 2024: 430,
+  2025: 440, 2026: 445,
+};
+const WATT_YEARS = Object.keys(MODULE_WATTS_BY_YEAR).map(Number);
+const WATT_MIN_Y = Math.min(...WATT_YEARS);
+const WATT_MAX_Y = Math.max(...WATT_YEARS);
+
+/** Average module wattage for a year, clamped to the table's range. */
+export function moduleWatts(year: number): number {
+  const y = Math.max(WATT_MIN_Y, Math.min(WATT_MAX_Y, year));
+  return MODULE_WATTS_BY_YEAR[y] ?? MODULE_WATTS_BY_YEAR[WATT_MAX_Y];
+}
+
+/** Estimated panel count for an installed capacity (kW) in a given year. */
+export function panelsForYear(capacityKW: number, year: number): number {
+  return Math.round((capacityKW * 1000) / moduleWatts(year));
+}
+
+/**
  * Build the vintage + forward waste-arisings series.
  * arisings(year) = installs(year - life). Years run from the first install
  * year to lastInstallYear + life.
  */
 export function arisingsSeries(
   yearly: YearPoint[],
-  field: "installs" | "capacity",
+  field: "installs" | "capacity" | "panels",
   life: number,
   band: number,
   nowYear: number,
@@ -124,7 +152,7 @@ export function arisingsSeries(
   const valByYear = new Map<number, number>();
   let startY = Infinity, lastY = -Infinity;
   for (const y of yearly) {
-    valByYear.set(y.year, field === "installs" ? y.installs : y.capacity);
+    valByYear.set(y.year, field === "installs" ? y.installs : field === "panels" ? panelsForYear(y.capacity, y.year) : y.capacity);
     startY = Math.min(startY, y.year);
     lastY = Math.max(lastY, y.year);
   }
