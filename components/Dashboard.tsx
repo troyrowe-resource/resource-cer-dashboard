@@ -27,7 +27,7 @@ const AusMap = dynamic(() => import("./map/AusMap"), {
 });
 
 type CountUnit = "installs" | "capacity" | "panels";
-const DEFAULT_ORDER = ["map", "bystate", "timeseries", "avgsize", "cumulative", "vintage"] as const;
+const DEFAULT_ORDER = ["map", "cumulative", "vintage", "bystate", "timeseries", "avgsize"] as const;
 const ORDER_KEY = "rs-panel-order-v1";
 
 function Panel(props: { title: string; sub?: string; action?: ReactNode; dragHandle?: ReactNode; children: ReactNode }) {

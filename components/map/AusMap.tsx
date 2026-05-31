@@ -3,7 +3,10 @@
    ABS-derived state GeoJSON. No WebGL/MapLibre worker - so it renders deterministically
    on every load (MapLibre's worker never completed style-load on the host, leaving the
    map blank). Boundaries are the real polygons; the projection is a simple equirectangular
-   fit (recognisable, not survey-grade), which is all a choropleth needs. */
+   fit (recognisable, not survey-grade), which is all a choropleth needs.
+   Zoom/pan is done by moving the SVG viewBox: +/- buttons, drag-to-pan, and Ctrl+scroll
+   (or trackpad pinch) to zoom at the cursor. Plain scroll is left to the page so the map
+   does not trap it. Click still filters a state - we only suppress it after a real drag. */
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Feature, FeatureCollection, Position } from "geojson";
 import type { DatasetKey, Metric, StateCode } from "@/lib/types";
@@ -12,6 +15,8 @@ import { loadPostcodes } from "@/lib/data";
 
 const GAMMA = 0.85;
 const VB_W = 1000, VB_H = 900, PAD = 16;
+const MIN_W = VB_W / 8; // deepest zoom (8x)
+const DRAG_PX = 3;      // movement over this many screen px counts as a pan, not a click
 // mainland + Tasmania frame (far offshore islands clip harmlessly)
 const LON0 = 112.9, LON1 = 154.0, LAT0 = -43.8, LAT1 = -10.0;
 
@@ -63,6 +68,12 @@ export interface AusMapProps {
 }
 
 interface HoverInfo { code: StateCode; x: number; y: number; }
+interface Box { x: number; y: number; w: number; h: number; }
+const FULL: Box = { x: 0, y: 0, w: VB_W, h: VB_H };
+
+function clampPan(v: Box): Box {
+  return { x: Math.max(0, Math.min(VB_W - v.w, v.x)), y: Math.max(0, Math.min(VB_H - v.h, v.y)), w: v.w, h: v.h };
+}
 
 export default function AusMap(props: AusMapProps) {
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -70,6 +81,21 @@ export default function AusMap(props: AusMapProps) {
   const [heat, setHeat] = useState<{ x: number; y: number; w: number }[]>([]);
   const [failed, setFailed] = useState(false);
   const [hover, setHover] = useState<HoverInfo | null>(null);
+  const [vb, setVb] = useState<Box>(FULL);
+  const [panning, setPanning] = useState(false);
+  const panRef = useRef<{ sx: number; sy: number; vx: number; vy: number; vw: number; vh: number; rw: number; rh: number } | null>(null);
+  const movedRef = useRef(false);
+
+  // zoom by a factor, keeping the point at (px,py) - fractions of the canvas - fixed
+  function zoomAt(factor: number, px: number, py: number) {
+    setVb((v) => {
+      const clampedW = Math.max(MIN_W, Math.min(VB_W, v.w * factor));
+      const f = clampedW / v.w;
+      const nw = v.w * f, nh = v.h * f;
+      const cx = v.x + px * v.w, cy = v.y + py * v.h;
+      return clampPan({ x: cx - px * nw, y: cy - py * nh, w: nw, h: nh });
+    });
+  }
 
   // load state boundaries
   useEffect(() => {
@@ -100,6 +126,38 @@ export default function AusMap(props: AusMapProps) {
     return () => { cancelled = true; };
   }, [props.showPostcode, props.view, props.metric]);
 
+  // drag-to-pan: track the mouse on the window so a fast drag is not lost off-element
+  useEffect(() => {
+    if (!panning) return;
+    const move = (e: MouseEvent) => {
+      const p = panRef.current;
+      if (!p) return;
+      if (Math.abs(e.clientX - p.sx) > DRAG_PX || Math.abs(e.clientY - p.sy) > DRAG_PX) movedRef.current = true;
+      const dx = ((e.clientX - p.sx) / p.rw) * p.vw;
+      const dy = ((e.clientY - p.sy) / p.rh) * p.vh;
+      setVb(clampPan({ x: p.vx - dx, y: p.vy - dy, w: p.vw, h: p.vh }));
+    };
+    const up = () => { setPanning(false); panRef.current = null; };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+    return () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
+  }, [panning]);
+
+  // wheel zoom - only with Ctrl/Cmd held (or a trackpad pinch, which the browser reports as
+  // ctrlKey). Plain scroll is left alone so the page can scroll past the map.
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      zoomAt(e.deltaY < 0 ? 0.82 : 1 / 0.82, (e.clientX - rect.left) / rect.width, (e.clientY - rect.top) / rect.height);
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
   const paths = useMemo(() => {
     if (!geo) return [];
     return geo.features
@@ -117,16 +175,33 @@ export default function AusMap(props: AusMapProps) {
 
   const max = Math.max(1, ...STATE_CODES.map((c) => props.stateValues[c] || 0));
   const anyActive = STATE_CODES.some((c) => props.active[c]);
+  const zoomed = vb.w < VB_W - 0.5;
 
   function onMove(e: React.MouseEvent, code: StateCode) {
+    if (panRef.current) return; // no tooltips while dragging
     const rect = wrapRef.current?.getBoundingClientRect();
     if (!rect) return;
     setHover({ code, x: e.clientX - rect.left, y: e.clientY - rect.top });
   }
 
+  function onDown(e: React.MouseEvent) {
+    if (e.button !== 0) return;
+    const rect = wrapRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    movedRef.current = false;
+    panRef.current = { sx: e.clientX, sy: e.clientY, vx: vb.x, vy: vb.y, vw: vb.w, vh: vb.h, rw: rect.width, rh: rect.height };
+    setPanning(true);
+    setHover(null);
+  }
+
   return (
-    <div className="map-canvas" ref={wrapRef} style={{ position: "relative" }}>
-      <svg viewBox={`0 0 ${VB_W} ${VB_H}`} width="100%" height="100%" preserveAspectRatio="xMidYMid meet" style={{ display: "block" }} role="img" aria-label={`Choropleth of ${props.metricLabel} by state`}>
+    <div
+      className="map-canvas"
+      ref={wrapRef}
+      onMouseDown={onDown}
+      style={{ position: "relative", cursor: panning ? "grabbing" : "grab", userSelect: "none", touchAction: "none" }}
+    >
+      <svg viewBox={`${vb.x.toFixed(1)} ${vb.y.toFixed(1)} ${vb.w.toFixed(1)} ${vb.h.toFixed(1)}`} width="100%" height="100%" preserveAspectRatio="xMidYMid meet" style={{ display: "block" }} role="img" aria-label={`Choropleth of ${props.metricLabel} by state`}>
         {/* state fills */}
         {paths.map((s) => {
           const v = props.stateValues[s.code] || 0;
@@ -140,12 +215,13 @@ export default function AusMap(props: AusMapProps) {
               fill={ramp(Math.pow(v / max, GAMMA))}
               stroke={sel ? "#FFA100" : hover?.code === s.code ? "#FFFFFF" : "#131216"}
               strokeWidth={sel ? 2.5 : hover?.code === s.code ? 1.6 : 1}
+              vectorEffect="non-scaling-stroke"
               opacity={dim ? 0.45 : 1}
               style={{ cursor: "pointer", transition: "opacity 150ms, fill 200ms" }}
               onMouseEnter={(e) => onMove(e, s.code)}
               onMouseMove={(e) => onMove(e, s.code)}
               onMouseLeave={() => setHover(null)}
-              onClick={() => props.onPick(s.code)}
+              onClick={() => { if (movedRef.current) return; props.onPick(s.code); }}
             />
           );
         })}
@@ -169,7 +245,19 @@ export default function AusMap(props: AusMapProps) {
           );
         })}
       </svg>
-      {hover && (
+
+      {/* zoom controls */}
+      <div className="map-zoom" onMouseDown={(e) => e.stopPropagation()}>
+        <button type="button" aria-label="Zoom in" title="Zoom in" onClick={() => zoomAt(0.7, 0.5, 0.5)}>+</button>
+        <button type="button" aria-label="Zoom out" title="Zoom out" onClick={() => zoomAt(1 / 0.7, 0.5, 0.5)}>&#8722;</button>
+        {zoomed && (
+          <button type="button" aria-label="Reset zoom" title="Reset zoom" className="map-zoom-reset" onClick={() => setVb(FULL)}>&#10226;</button>
+        )}
+      </div>
+
+      {!zoomed && <div className="map-hint">Drag to pan &middot; Ctrl+scroll or pinch to zoom</div>}
+
+      {hover && !panning && (
         <div
           style={{
             position: "absolute", left: hover.x, top: hover.y,
