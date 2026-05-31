@@ -4,6 +4,32 @@ I worked through this autonomously while you were away. Where a call was needed 
 sensible default and recorded it here. Nothing is left broken; the app builds, all 25 unit
 tests pass, and accessibility is clean.
 
+## Update - changes since the autonomous handoff (current live state)
+After the handoff you asked for a round of refinements; all are live on Vercel:
+1. **Map reworked to plain SVG.** The original MapLibre choropleth rendered locally but stayed
+   blank on Vercel - MapLibre's GL worker never completed style-load on the host, so `addSource`
+   threw "Style is not done loading". I replaced it with a hand-built SVG choropleth drawn from the
+   same state GeoJSON (real boundaries, postcode-heat dots, hover + click-to-filter). No WebGL or
+   worker, so it renders deterministically on every load. Verified live.
+2. **Assumed-life slider range** changed from 20-35y to **10-25y** (solar default 25y).
+3. **Estimated solar panels** added as a metric: capacity / average module wattage for the install
+   year (a recycler counts panels, not just installs or kW). Module-wattage table in `lib/cer.ts`.
+4. **Cumulative panel** gained a Systems / Panels / Capacity toggle and its own assumed-life
+   slider; the end-of-life band grows as the slider shrinks - the same controls as the vintage panel.
+5. **Panels are drag-and-drop reorderable** (grip handle on each); the order is saved per browser
+   in `localStorage` (`rs-panel-order-v1`).
+6. **Dataset pill** recoloured to orange-on-dark to match the theme. This supersedes the cream-pill
+   contrast note in item 4 below - the pill is now brand orange on a dark surface, which passes AA.
+7. **Favicon** is the black-and-orange mark (not white-and-orange) and is padded to a square so the
+   browser tab no longer squashes it.
+
+**One retained dependency:** `maplibre-gl` is still listed in `package.json` even though nothing
+imports it any more. It is tree-shaken out (First Load JS is 102 kB, no map dependency in the
+bundle), so it costs nothing at runtime - it only adds to `node_modules` at build time. I left it
+in to keep `package.json` and `package-lock.json` in sync (Vercel runs `npm ci`, which fails on a
+mismatch, and this build sandbox cannot regenerate the lock). To remove it on your machine: run
+`npm uninstall maplibre-gl`, then commit the updated `package.json` + `package-lock.json`.
+
 ## Where the repository lives (important)
 The committed, push-ready git repository is at **`C:\Users\TroyRowe\Documents\resource-cer-dashboard`**.
 A short path is required because Git on Windows cannot operate inside the very long Cowork
@@ -62,9 +88,9 @@ shades, we would be knowingly shipping a serious contrast failure on those eleme
 Per the brief, where a test encoded a wrong expectation I fixed the test, not the code:
 - `agg.test.ts`: an off-by-one in the arisings-with-lifespan check (with life=30, arisings(2030)
   = installs(2000), not 2031). The pipeline was correct.
-- `build.test.ts`: my first "no client chunk > 700KB" heuristic flagged MapLibre, which is
-  legitimately ~1MB but **lazy-loaded** (not in the 114 kB initial bundle). Replaced with a
-  meaningful check: any large chunk must be MapLibre, and xlsx markers must be absent (they are).
+- `build.test.ts`: my first "no client chunk > 700KB" heuristic flagged the (then) MapLibre map
+  dependency. The map is plain SVG now (see the update section at the top), so the size heuristic
+  was removed; the test just checks xlsx markers are absent from every client chunk (they are).
 
 ### 6. Postcode 0200 -> OTHER (kept exactly per the supplied mapping)
 The mapping function in the brief sends 0200 (the ANU/Canberra special postcode) to OTHER, not

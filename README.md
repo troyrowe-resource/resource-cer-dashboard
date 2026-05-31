@@ -9,8 +9,8 @@ charts, and a signature **installation-vintage / waste-arisings** projection - o
 installs approaching end-of-life become future recycling feedstock.
 
 Built for ReSource (re-source.au). Stack: **Next.js (App Router) + React + TypeScript +
-Tailwind CSS**, deployed to **Vercel**. Charts are hand-built SVG (no charting dependency);
-the map is **MapLibre GL JS** (no API token).
+Tailwind CSS**, deployed to **Vercel**. Charts and the choropleth map are hand-built SVG
+(no charting or mapping dependency, no API token, no WebGL).
 
 ---
 
@@ -179,6 +179,7 @@ SVG versions and update the two `<img src>` references in `components/Header.tsx
 
 - The placeholder data from the original design prototype has been **replaced with real CER
   data**; figures shown are approved-STC installations as at the file date.
-- The map uses MapLibre GL JS with a token-free, self-contained dark style (our own GeoJSON
-  only - no external tile provider). MapLibre is lazy-loaded so it is not in the initial bundle.
+- The map is a hand-built SVG choropleth drawn from our own state GeoJSON (no tile provider, no
+  API token, no WebGL). It renders deterministically on every load and degrades to the by-state
+  chart if the GeoJSON fails to load.
 - TypeScript is strict throughout; the data layer carries no `any`.

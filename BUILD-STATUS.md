@@ -16,7 +16,7 @@ Last verified end to end on the uploaded CER files (data as at 30 Apr 2026).
 | Accessibility (axe, WCAG 2A/2AA) | axe-core | main view | 0 violations (24 passes) |
 
 Type-check (`tsc --noEmit`): PASS. Lint (ESLint, no `any`): 0 errors, 0 warnings.
-Production `next build`: clean. First Load JS for `/`: 114 kB (MapLibre lazy-loaded, not in the initial bundle).
+Production `next build`: clean. First Load JS for `/`: 102 kB (the map is plain SVG - no heavy mapping dependency).
 
 ## Reproduce (on a normal machine or CI)
 
@@ -56,7 +56,7 @@ Everything in the spec is implemented with **real CER data** - nothing stubbed o
 - SOLAR/BATTERY toggle; state multi-select; time range (from/to + presets ALL/10Y/5Y/1Y/YTD);
   metric (Installs/Capacity/Avg size).
 - 4 KPI cards (incl. latest **complete** month - provisional months excluded from the headline).
-- MapLibre choropleth + postcode heat overlay (token-free, lazy-loaded, degrades gracefully).
+- SVG choropleth + postcode heat overlay (token-free, no WebGL, degrades gracefully).
 - Charts: monthly time series (trailing provisional months flagged), by-state bar, average-size
   trend, cumulative capacity, and the vintage / waste-arisings projection with an editable
   lifespan slider.

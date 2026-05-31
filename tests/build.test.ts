@@ -58,16 +58,13 @@ test("the xlsx library is not in the client bundle", () => {
     const txt = readFileSync(f, "utf8");
     assert.ok(!/sheetjs/i.test(txt), `SheetJS marker found in client bundle ${f}`);
     assert.ok(!txt.includes("XLSX.utils"), `XLSX.utils found in client bundle ${f}`);
-    // the only legitimately-large chunk is the (lazy-loaded) MapLibre map. Any large
-    // chunk MUST be MapLibre - if a 900KB+ chunk were NOT maplibre, xlsx likely leaked in.
-    if (statSync(f).size > 500 * 1024) {
-      assert.match(txt, /maplibre/i, `large client chunk ${f} is not MapLibre - a heavy dep may have leaked in`);
-    }
+    // The map is plain SVG now, so there is no intentionally-large client chunk. The xlsx
+    // markers above are the real guard: the parser must never reach the browser.
   }
 });
 
-// ---- D4: the map is lazy-loaded (not in the initial bundle) ----
-test("the MapLibre map is dynamically imported with ssr disabled", () => {
+// ---- D4: the map is a client-only dynamic import (not in the initial server bundle) ----
+test("the map is a client-only dynamic import (ssr disabled)", () => {
   const dash = read("components/Dashboard.tsx");
   assert.match(dash, /dynamic\(\s*\(\)\s*=>\s*import\(["']\.\/map\/AusMap["']\)/, "AusMap should be a dynamic import");
   assert.match(dash, /ssr:\s*false/, "AusMap dynamic import should set ssr:false");
@@ -101,7 +98,7 @@ test("postcodes missing a centroid are emitted with null lng/lat (not dropped or
   // there ARE a few unmatched postcodes (e.g. 0000/edge codes) - they must be present, not dropped
   assert.ok(withNull.length >= 1, "expected at least one null-centroid postcode to prove graceful handling");
   assert.ok(withCentroid.length / pc.solar.length > 0.9, "most postcodes should have centroids");
-  // and the map layer must filter out the null ones rather than feed NaN coordinates to MapLibre
+  // and the map layer must filter out the null ones rather than feed NaN coordinates to the projection
   const map = read("components/map/AusMap.tsx");
   assert.match(map, /p\.lat != null && p\.lng != null/, "map must skip null-centroid postcodes");
 });
