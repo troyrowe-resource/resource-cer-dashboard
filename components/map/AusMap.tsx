@@ -4,7 +4,8 @@
    MapLibre is dynamically imported so it is lazy-loaded and never touches SSR. */
 import { useEffect, useRef, useState } from "react";
 import "maplibre-gl/dist/maplibre-gl.css";
-import type { Map as MlMap, MapGeoJSONFeature, MapSourceDataEvent } from "maplibre-gl";
+import type { Map as MlMap, MapGeoJSONFeature, MapSourceDataEvent, GeoJSONSource } from "maplibre-gl";
+import type { FeatureCollection } from "geojson";
 import type { DatasetKey, Metric, StateCode } from "@/lib/types";
 import { STATE_CODES, STATE_NAMES } from "@/lib/types";
 import { loadPostcodes } from "@/lib/data";
@@ -16,6 +17,34 @@ const RAMP: [number, string][] = [
   [1, "#FFA100"],
 ];
 const GAMMA = 0.85;
+
+/** Bake the choropleth styling (t = gamma-applied intensity, sel, dim) into each state's
+    GeoJSON properties, so the fill is driven by the data itself and renders on parse - no
+    feature-state timing race. Rebuilt and fed to setData whenever values/selection change. */
+function styledStates(
+  raw: FeatureCollection,
+  values: Record<StateCode, number>,
+  active: Partial<Record<StateCode, boolean>>,
+): FeatureCollection {
+  const max = Math.max(1, ...STATE_CODES.map((c) => values[c] || 0));
+  const anyActive = STATE_CODES.some((c) => active[c]);
+  return {
+    type: "FeatureCollection",
+    features: raw.features.map((f) => {
+      const code = (f.properties?.code ?? "") as StateCode;
+      const v = values[code] || 0;
+      return {
+        ...f,
+        properties: {
+          ...f.properties,
+          t: Math.pow(v / max, GAMMA),
+          sel: active[code] ? 1 : 0,
+          dim: anyActive && !active[code] ? 1 : 0,
+        },
+      };
+    }),
+  };
+}
 
 // Approximate label anchor points (lon, lat). ACT nudged east so it clears NSW.
 const LABEL_POS: Record<StateCode, [number, number]> = {
@@ -47,6 +76,7 @@ export default function AusMap(props: AusMapProps) {
   const mapRef = useRef<MlMap | null>(null);
   const readyRef = useRef(false);
   const pcAddedRef = useRef(false);
+  const rawStatesRef = useRef<FeatureCollection | null>(null);
   const [ready, setReady] = useState(false);
   const [hover, setHover] = useState<HoverInfo | null>(null);
   const [labels, setLabels] = useState<{ code: StateCode; x: number; y: number }[]>([]);
@@ -88,24 +118,30 @@ export default function AusMap(props: AusMapProps) {
 
         const res = await fetch("/geo/aus-states.geojson");
         if (!res.ok) throw new Error("states geojson " + res.status);
-        const states = await res.json();
+        const states = (await res.json()) as FeatureCollection;
+        rawStatesRef.current = states;
 
         await new Promise<void>((resolve) => map!.on("load", () => resolve()));
         if (cancelled) return;
 
-        map.addSource("states", { type: "geojson", data: states, promoteId: "code" });
-
-        // choropleth fill, driven by feature-state `t` (0..1, gamma-applied)
+        // Colours are baked into the feature properties (t/sel/dim); the fill is driven by
+        // ["get","t"], so the choropleth paints the instant the source parses - no feature-state
+        // race. Selection updates via setData. Only hover (transient) uses feature-state.
+        map.addSource("states", {
+          type: "geojson",
+          data: styledStates(states, propsRef.current.stateValues, propsRef.current.active),
+          promoteId: "code",
+        });
         map.addLayer({
           id: "states-fill",
           type: "fill",
           source: "states",
           paint: {
             "fill-color": [
-              "interpolate", ["linear"], ["coalesce", ["feature-state", "t"], 0],
+              "interpolate", ["linear"], ["get", "t"],
               RAMP[0][0], RAMP[0][1], RAMP[1][0], RAMP[1][1], RAMP[2][0], RAMP[2][1],
             ],
-            "fill-opacity": ["case", ["boolean", ["feature-state", "dim"], false], 0.4, 1],
+            "fill-opacity": ["case", ["==", ["get", "dim"], 1], 0.4, 1],
           },
         });
         map.addLayer({
@@ -115,13 +151,13 @@ export default function AusMap(props: AusMapProps) {
           paint: {
             "line-color": [
               "case",
-              ["boolean", ["feature-state", "selected"], false], "#FFA100",
               ["boolean", ["feature-state", "hover"], false], "#FFFFFF",
+              ["==", ["get", "sel"], 1], "#FFA100",
               "#131216",
             ],
             "line-width": [
               "case",
-              ["boolean", ["feature-state", "selected"], false], 2,
+              ["==", ["get", "sel"], 1], 2,
               ["boolean", ["feature-state", "hover"], false], 1.4,
               1,
             ],
@@ -173,10 +209,9 @@ export default function AusMap(props: AusMapProps) {
         map.on("move", recomputeLabels);
         map.on("resize", recomputeLabels);
 
-        // Wait until the "states" source has actually parsed before declaring ready.
-        // The choropleth colours are applied via feature-state in a one-shot effect that
-        // fires when `ready` flips true; if we flip it before the source loads, those
-        // setFeatureState calls are dropped and every state renders unstyled (near-black).
+        // Wait until the "states" source has parsed before declaring ready, so the postcode
+        // overlay is added afterwards and selection updates (setData) target a live source.
+        // (The choropleth fill itself is already correct on parse - colours are baked into the data.)
         await new Promise<void>((resolve) => {
           let done = false;
           const finish = () => { if (!done) { done = true; resolve(); } };
@@ -206,22 +241,12 @@ export default function AusMap(props: AusMapProps) {
     };
   }, []);
 
-  // ---- choropleth values + selection ----
+  // ---- choropleth values + selection: re-bake colours into the source data ----
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !ready) return;
-    const vals = STATE_CODES.map((c) => props.stateValues[c] || 0);
-    const max = Math.max(1, ...vals);
-    const anyActive = STATE_CODES.some((c) => props.active[c]);
-    for (const code of STATE_CODES) {
-      const v = props.stateValues[code] || 0;
-      const t = Math.pow(v / max, GAMMA);
-      const selected = !!props.active[code];
-      map.setFeatureState(
-        { source: "states", id: code },
-        { t, selected, dim: anyActive && !selected },
-      );
-    }
+    if (!map || !ready || !rawStatesRef.current) return;
+    const src = map.getSource("states") as GeoJSONSource | undefined;
+    if (src) src.setData(styledStates(rawStatesRef.current, props.stateValues, props.active));
   }, [props.stateValues, props.active, ready]);
 
   // ---- postcode heat overlay ----
@@ -267,7 +292,7 @@ export default function AusMap(props: AusMapProps) {
           });
           pcAddedRef.current = true;
         } else {
-          (map.getSource("pc") as maplibregl.GeoJSONSource).setData(fc);
+          (map.getSource("pc") as GeoJSONSource).setData(fc);
           map.setPaintProperty("pc-heat", "heatmap-weight", ["interpolate", ["linear"], ["get", weightProp], 0, 0, maxW, 1]);
         }
         map.setLayoutProperty("pc-heat", "visibility", props.showPostcode ? "visible" : "none");
