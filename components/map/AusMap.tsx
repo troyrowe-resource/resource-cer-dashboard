@@ -109,6 +109,16 @@ export default function AusMap(props: AusMapProps) {
           minZoom: 1,
         });
         mapRef.current = map;
+        // CRITICAL (blank-map bug): attach the load listener SYNCHRONOUSLY, before any await,
+        // so the 'load' event can never fire in an async gap and be missed (which hung init and
+        // left the map blank). map.loaded() alone is not enough - it can read false after 'load'.
+        const loadPromise = new Promise<void>((resolve) => {
+          if (map!.loaded()) { resolve(); return; }
+          map!.once("load", () => resolve());
+          map!.once("error", () => resolve()); // never hang on a style error
+          setTimeout(resolve, 6000); // ultimate safety net
+        });
+        console.log("[ausmap] map created");
         // fixed choropleth: disable navigation gestures
         map.dragPan.disable();
         map.scrollZoom.disable();
@@ -120,14 +130,10 @@ export default function AusMap(props: AusMapProps) {
         if (!res.ok) throw new Error("states geojson " + res.status);
         const states = (await res.json()) as FeatureCollection;
         rawStatesRef.current = states;
+        console.log("[ausmap] geojson loaded", states.features?.length);
 
-        // CRITICAL: 'load' can fire during the await fetch above. Guard with map.loaded() so we
-        // never wait on an event that has already passed - otherwise init hangs forever and the
-        // map stays blank (this was the intermittent black-map bug). once() also avoids a leak.
-        await new Promise<void>((resolve) => {
-          if (map!.loaded()) resolve();
-          else map!.once("load", () => resolve());
-        });
+        await loadPromise;
+        console.log("[ausmap] style loaded, adding source");
         if (cancelled) return;
 
         // Colours are baked into the feature properties (t/sel/dim); the fill is driven by
@@ -230,6 +236,7 @@ export default function AusMap(props: AusMapProps) {
         });
         if (cancelled) return;
 
+        console.log("[ausmap] ready (source parsed, choropleth painted)");
         readyRef.current = true;
         setReady(true);
       } catch (err) {

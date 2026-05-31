@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useMemo, type ReactNode } from "react";
+import { useState, useEffect, useMemo, type ReactNode, type DragEvent } from "react";
 import dynamic from "next/dynamic";
 import type { DataFile, DatasetKey, Metric, StateCode, PostcodeState, MonthPoint } from "@/lib/types";
 import { STATE_CODES, STATE_NAMES } from "@/lib/types";
@@ -26,11 +26,16 @@ const AusMap = dynamic(() => import("./map/AusMap"), {
   ),
 });
 
-function Panel(props: { title: string; sub?: string; full?: boolean; action?: ReactNode; children: ReactNode }) {
+type CountUnit = "installs" | "capacity" | "panels";
+const DEFAULT_ORDER = ["map", "bystate", "timeseries", "avgsize", "cumulative", "vintage"] as const;
+const ORDER_KEY = "rs-panel-order-v1";
+
+function Panel(props: { title: string; sub?: string; action?: ReactNode; dragHandle?: ReactNode; children: ReactNode }) {
   return (
-    <div className={"panel" + (props.full ? " span-all" : "")}>
+    <div className="panel">
       <div className="panel-head">
-        <div>
+        {props.dragHandle ?? null}
+        <div style={{ flex: 1, minWidth: 0 }}>
           <h2 className="panel-title">{props.title}</h2>
           {props.sub ? <div className="panel-sub">{props.sub}</div> : null}
         </div>
@@ -52,16 +57,34 @@ export default function Dashboard() {
   const [fromYM, setFromYM] = useState("");
   const [toYM, setToYM] = useState("");
   const [life, setLife] = useState(25);
-  const [vintageUnit, setVintageUnit] = useState<"installs" | "capacity" | "panels">("installs");
+  const [vintageUnit, setVintageUnit] = useState<CountUnit>("installs");
+  const [cumUnit, setCumUnit] = useState<CountUnit>("capacity");
+  const [cumLife, setCumLife] = useState(25);
+  // panel order (drag-and-drop reorderable, persisted)
+  const [order, setOrder] = useState<string[]>([...DEFAULT_ORDER]);
+  const [dragKey, setDragKey] = useState<string | null>(null);
+  const [overKey, setOverKey] = useState<string | null>(null);
 
   useEffect(() => {
     loadData().then(setData).catch((e) => setErr(String(e?.message ?? e)));
   }, []);
 
+  // restore a saved panel order
+  useEffect(() => {
+    try {
+      const s = localStorage.getItem(ORDER_KEY);
+      if (!s) return;
+      const arr = JSON.parse(s);
+      if (Array.isArray(arr) && arr.length === DEFAULT_ORDER.length && DEFAULT_ORDER.every((k) => arr.includes(k))) {
+        setOrder(arr);
+      }
+    } catch { /* ignore */ }
+  }, []);
+
   const bundle = data ? data[view] : null;
   const meta = data ? data.meta.datasets[view] : null;
 
-  // reset range/selection/lifespan when the dataset changes (and on first load)
+  // reset range/selection/lifespan/units when the dataset changes (and on first load)
   useEffect(() => {
     if (!data) return;
     const m = data.meta.datasets[view];
@@ -70,7 +93,9 @@ export default function Dashboard() {
     setSel({});
     setGran("month");
     setLife(m.assumedLifeYears);
+    setCumLife(m.assumedLifeYears);
     setVintageUnit("installs");
+    setCumUnit("capacity");
   }, [view, data]);
 
   const activeCodes = STATE_CODES.filter((c) => sel[c]);
@@ -86,13 +111,41 @@ export default function Dashboard() {
     () => (bundle && fromYM && toYM ? stateTotals(bundle, fromYM, toYM) : null),
     [bundle, fromYM, toYM],
   );
-  // Per-state metric value for the map + bar. Memoised so AusMap's choropleth
-  // effect only fires when the values actually change (stable object identity).
   const mapValues = useMemo(() => {
     const mv = {} as Record<StateCode, number>;
     if (stTot) for (const c of STATE_CODES) mv[c] = metricVal(stTot[c], metric);
     return mv;
   }, [stTot, metric]);
+
+  // ---- drag-and-drop reordering ----
+  const persistOrder = (o: string[]) => { try { localStorage.setItem(ORDER_KEY, JSON.stringify(o)); } catch { /* ignore */ } };
+  const onDrop = (target: string) => {
+    const from = dragKey;
+    setDragKey(null);
+    setOverKey(null);
+    if (!from || from === target) return;
+    setOrder((prev) => {
+      const a = prev.filter((k) => k !== from);
+      const i = a.indexOf(target);
+      a.splice(i < 0 ? a.length : i, 0, from);
+      persistOrder(a);
+      return a;
+    });
+  };
+  const handle = (key: string) => (
+    <span
+      className="drag-handle"
+      draggable
+      role="button"
+      tabIndex={0}
+      aria-label="Drag to reorder this panel"
+      title="Drag to reorder"
+      onDragStart={(e: DragEvent) => { setDragKey(key); e.dataTransfer.effectAllowed = "move"; try { e.dataTransfer.setData("text/plain", key); } catch { /* ignore */ } }}
+      onDragEnd={() => { setDragKey(null); setOverKey(null); }}
+    >
+      &#x283F;
+    </span>
+  );
 
   if (err) {
     return <div className="rs-app density-regular"><div className="state-msg" role="alert">Could not load data: {err}</div></div>;
@@ -151,8 +204,6 @@ export default function Dashboard() {
     const pav = pa.installs ? pa.capacity / pa.installs : 0;
     if (pav) avgDelta = ((lav - pav) / pav) * 100;
   }
-  // Latest COMPLETE month for the KPI: skip the trailing provisional (incomplete) months
-  // so the headline figure is not an under-counted partial month.
   let lastCompleteIdx = -1;
   for (let i = agg.months.length - 1; i >= 0; i--) { if (!agg.months[i].incomplete) { lastCompleteIdx = i; break; } }
   const lastComplete = lastCompleteIdx >= 0 ? agg.months[lastCompleteIdx] : agg.latestMonth;
@@ -162,7 +213,6 @@ export default function Dashboard() {
       ? ((lastComplete.installs - beforeComplete.installs) / beforeComplete.installs) * 100
       : null;
 
-  // time-series records (respect granularity)
   let tsRecords: MonthPoint[];
   if (gran === "year") {
     tsRecords = byYear(agg.months).map((y) => ({ ym: y.year + "-01", y: y.year, m: 1, installs: y.installs, capacity: y.capacity }));
@@ -177,13 +227,133 @@ export default function Dashboard() {
   }));
 
   const vintageYearly = byYear(agg.months);
-  // The vintage view has its own count unit (Systems / Panels / Capacity), independent of the
-  // global metric. Panels are solar-only and estimated; never offered for battery.
-  const vintField: "installs" | "capacity" | "panels" = view === "battery" && vintageUnit === "panels" ? "installs" : vintageUnit;
-  const vintageOpts: { value: "installs" | "capacity" | "panels"; label: string }[] =
+  const vintField: CountUnit = view === "battery" && vintageUnit === "panels" ? "installs" : vintageUnit;
+  const cumField: CountUnit = view === "battery" && cumUnit === "panels" ? "capacity" : cumUnit;
+  const unitOpts: { value: CountUnit; label: string }[] =
     view === "solar"
       ? [{ value: "installs", label: "Systems" }, { value: "panels", label: "Panels" }, { value: "capacity", label: "Capacity" }]
       : [{ value: "installs", label: "Batteries" }, { value: "capacity", label: "Capacity" }];
+
+  const panelsNote = (
+    <div className="note" style={{ marginTop: 12 }}>
+      <span className="note-mark" aria-hidden="true">i</span>
+      <span>
+        Panel counts are <strong>estimated</strong> - the CER records system capacity, not panel numbers. We divide installed
+        capacity by the average module wattage for each install year (about 80 W in 2001 rising to about 440 W in 2026), so
+        treat these as indicative of the number of panels reaching end-of-life.
+      </span>
+    </div>
+  );
+
+  // ---- one renderer per draggable panel ----
+  function renderPanel(key: string): ReactNode {
+    // re-narrow for this closure (only ever called after the loading guard above)
+    if (!data || !meta || !agg) return null;
+    switch (key) {
+      case "map":
+        return (
+          <Panel
+            title="Installations by location"
+            sub="Choropleth by state; postcode heat overlay (cumulative)"
+            dragHandle={handle(key)}
+            action={
+              <div className="panel-tools">
+                <button type="button" className={"tgl" + (showPostcode ? " is-on" : "")} aria-pressed={showPostcode} onClick={() => setShowPostcode((s) => !s)}>
+                  <span className="tgl-dot" />Postcode heat
+                </button>
+              </div>
+            }
+          >
+            <div className="map-wrap">
+              <AusMap metric={metric} metricLabel={metricLabel} view={view} stateValues={mapValues} active={sel} onPick={pick} showPostcode={showPostcode} fmt={fmtMetric} />
+              <div className="heat-legend">
+                <span className="hl-k">Low</span>
+                <div className="hl-bar" />
+                <span className="hl-k">High</span>
+                <span className="hl-metric">{metricLabel}</span>
+              </div>
+            </div>
+          </Panel>
+        );
+      case "bystate":
+        return (
+          <Panel title="By state / territory" sub={metricLabel + " over selected range"} dragHandle={handle(key)}>
+            <StateBar rows={barRows} active={sel} onPick={(c) => pick(c as StateCode)} fmt={fmtMetric} />
+          </Panel>
+        );
+      case "timeseries":
+        return (
+          <Panel
+            title={(view === "solar" ? "Rooftop solar" : "Home battery") + " installations over time"}
+            sub={"Monthly " + meta.unitName + " (orange) and capacity (dashed). " + (view === "battery" ? "Battery data from Jul 2025." : "Solar data from 2001.")}
+            dragHandle={handle(key)}
+            action={<Segmented value={gran} onChange={setGran} ariaLabel="Granularity" options={[{ value: "month", label: "Monthly" }, { value: "year", label: "Yearly" }]} />}
+          >
+            <TimeSeries months={tsRecords} metric={metric} mode={gran} sizeUnit={meta.sizeUnit} height={250} />
+            <div className="note" style={{ marginTop: 12 }}>
+              <span className="note-mark" aria-hidden="true">i</span>
+              <span>
+                Approved small-scale certificate (STC) installations as at {data!.meta.dataAsAt}. Under the CER 12-month
+                certificate-creation window the most recent {meta!.incompleteMonths} months are incomplete and will rise in
+                later updates (shown dashed{gran === "year" ? ", at the year level the final year is partial" : ""}).{" "}
+                {view === "battery" ? "Government 'installed' headlines (about 400,000 batteries) include pending applications and exceed approved-STC counts. " : ""}
+                Capacity is rated kW for solar and usable kWh for battery - the two are never combined.
+              </span>
+            </div>
+          </Panel>
+        );
+      case "avgsize":
+        return (
+          <Panel title="Average system size" sub={"Yearly trend (" + meta.sizeUnit + ")"} dragHandle={handle(key)}>
+            <LineTrend points={trendPoints} unit={meta.sizeUnit} rowLabel="Avg size" height={180} />
+          </Panel>
+        );
+      case "cumulative":
+        return (
+          <Panel
+            title="Cumulative capacity"
+            sub="Running total over time, with the share that has reached end-of-life shaded (assumed life adjustable)."
+            dragHandle={handle(key)}
+            action={
+              <div style={{ display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+                <Segmented value={cumField} onChange={setCumUnit} ariaLabel="Cumulative count unit" options={unitOpts} />
+                <div className="life-ctl">
+                  <label htmlFor="cum-life-slider" className="fk">Assumed life</label>
+                  <input id="cum-life-slider" type="range" min={meta.lifeMin} max={meta.lifeMax} step={1} value={cumLife} onChange={(e) => setCumLife(Number(e.target.value))} />
+                  <span className="life-val">{cumLife} yrs</span>
+                </div>
+              </div>
+            }
+          >
+            <CumulativeArea months={agg.months} field={cumField} unit={meta.sizeUnit} life={cumLife} height={180} />
+            {cumField === "panels" ? panelsNote : null}
+          </Panel>
+        );
+      case "vintage":
+        return (
+          <Panel
+            title="Installation vintage and waste arisings"
+            sub={"By year of installation, with an end-of-life band and a forward waste-arisings projection (arisings = the cohort installed " + life + " years earlier)."}
+            dragHandle={handle(key)}
+            action={
+              <div style={{ display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+                <Segmented value={vintField} onChange={setVintageUnit} ariaLabel="Vintage count unit" options={unitOpts} />
+                <div className="life-ctl">
+                  <label htmlFor="vintage-life-slider" className="fk">Assumed life</label>
+                  <input id="vintage-life-slider" type="range" min={meta.lifeMin} max={meta.lifeMax} step={1} value={life} onChange={(e) => setLife(Number(e.target.value))} />
+                  <span className="life-val">{life} yrs</span>
+                </div>
+              </div>
+            }
+          >
+            <Vintage yearly={vintageYearly} field={vintField} life={life} band={meta.bandYears} nowYear={nowYear} unitName={meta.unitName} sizeUnit={meta.sizeUnit} height={310} />
+            {vintField === "panels" ? panelsNote : null}
+          </Panel>
+        );
+      default:
+        return null;
+    }
+  }
 
   return (
     <div className="rs-app density-regular">
@@ -218,93 +388,21 @@ export default function Dashboard() {
             sub={lastComplete ? monthLong(lastComplete) : ""} />
         </div>
 
-        {/* map + by-state bar */}
-        <div className="grid grid-mapbar">
-          <Panel
-            title="Installations by location"
-            sub="Choropleth by state; postcode heat overlay (cumulative)"
-            action={
-              <div className="panel-tools">
-                <button type="button" className={"tgl" + (showPostcode ? " is-on" : "")} aria-pressed={showPostcode} onClick={() => setShowPostcode((s) => !s)}>
-                  <span className="tgl-dot" />Postcode heat
-                </button>
-              </div>
-            }
-          >
-            <div className="map-wrap">
-              <AusMap metric={metric} metricLabel={metricLabel} view={view} stateValues={mapValues} active={sel} onPick={pick} showPostcode={showPostcode} fmt={fmtMetric} />
-              <div className="heat-legend">
-                <span className="hl-k">Low</span>
-                <div className="hl-bar" />
-                <span className="hl-k">High</span>
-                <span className="hl-metric">{metricLabel}</span>
-              </div>
-            </div>
-          </Panel>
+        <div className="reorder-hint">Drag the &#x283F; handle on any panel to reorder the dashboard. Your layout is saved in this browser.</div>
 
-          <Panel title="By state / territory" sub={metricLabel + " over selected range"}>
-            <StateBar rows={barRows} active={sel} onPick={(c) => pick(c as StateCode)} fmt={fmtMetric} />
-          </Panel>
+        {/* reorderable panels */}
+        <div className="reorder-list">
+          {order.map((key) => (
+            <div
+              key={key}
+              className={"reorder-slot" + (overKey === key && dragKey && dragKey !== key ? " drag-over" : "") + (dragKey === key ? " dragging" : "")}
+              onDragOver={(e) => { if (!dragKey) return; e.preventDefault(); e.dataTransfer.dropEffect = "move"; if (overKey !== key) setOverKey(key); }}
+              onDrop={(e) => { e.preventDefault(); onDrop(key); }}
+            >
+              {renderPanel(key)}
+            </div>
+          ))}
         </div>
-
-        {/* time series */}
-        <Panel
-          full
-          title={(view === "solar" ? "Rooftop solar" : "Home battery") + " installations over time"}
-          sub={"Monthly " + meta.unitName + " (orange) and capacity (dashed). " + (view === "battery" ? "Battery data from Jul 2025." : "Solar data from 2001.")}
-          action={<Segmented value={gran} onChange={setGran} ariaLabel="Granularity" options={[{ value: "month", label: "Monthly" }, { value: "year", label: "Yearly" }]} />}
-        >
-          <TimeSeries months={tsRecords} metric={metric} mode={gran} sizeUnit={meta.sizeUnit} height={250} />
-          <div className="note" style={{ marginTop: 12 }}>
-            <span className="note-mark" aria-hidden="true">i</span>
-            <span>
-              Approved small-scale certificate (STC) installations as at {data.meta.dataAsAt}. Under the CER 12-month
-              certificate-creation window the most recent {meta.incompleteMonths} months are incomplete and will rise in
-              later updates (shown dashed{gran === "year" ? ", at the year level the final year is partial" : ""}).{" "}
-              {view === "battery" ? "Government 'installed' headlines (about 400,000 batteries) include pending applications and exceed approved-STC counts. " : ""}
-              Capacity is rated kW for solar and usable kWh for battery - the two are never combined.
-            </span>
-          </div>
-        </Panel>
-
-        {/* two-up: avg size + cumulative */}
-        <div className="grid grid-two">
-          <Panel title="Average system size" sub={"Yearly trend (" + meta.sizeUnit + ")"}>
-            <LineTrend points={trendPoints} unit={meta.sizeUnit} rowLabel="Avg size" height={180} />
-          </Panel>
-          <Panel title="Cumulative capacity" sub="Running total installed capacity">
-            <CumulativeArea months={agg.months} field="capacity" unit={meta.sizeUnit} height={180} />
-          </Panel>
-        </div>
-
-        {/* vintage / arisings */}
-        <Panel
-          full
-          title="Installation vintage and waste arisings"
-          sub={"By year of installation, with an end-of-life band and a forward waste-arisings projection (arisings = the cohort installed " + life + " years earlier)."}
-          action={
-            <div style={{ display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
-              <Segmented value={vintField} onChange={setVintageUnit} ariaLabel="Vintage count unit" options={vintageOpts} />
-              <div className="life-ctl">
-                <label htmlFor="life-slider" className="fk">Assumed life</label>
-                <input id="life-slider" type="range" min={meta.lifeMin} max={meta.lifeMax} step={1} value={life} onChange={(e) => setLife(Number(e.target.value))} />
-                <span className="life-val">{life} yrs</span>
-              </div>
-            </div>
-          }
-        >
-          <Vintage yearly={vintageYearly} field={vintField} life={life} band={meta.bandYears} nowYear={nowYear} unitName={meta.unitName} sizeUnit={meta.sizeUnit} height={310} />
-          {vintField === "panels" && (
-            <div className="note" style={{ marginTop: 12 }}>
-              <span className="note-mark" aria-hidden="true">i</span>
-              <span>
-                Panel counts are <strong>estimated</strong> - the CER records system capacity, not panel numbers. We divide installed
-                capacity by the average module wattage for each install year (about 80 W in 2001 rising to about 440 W in 2026), so
-                treat these as indicative of the number of panels reaching end-of-life.
-              </span>
-            </div>
-          )}
-        </Panel>
       </main>
 
       <Footer dataAsAt={data.meta.dataAsAt} historicSourceDate={data.meta.historicSourceDate} source={data.meta.source} />

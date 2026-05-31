@@ -153,6 +153,21 @@ body {
 .grid-two { grid-template-columns: 1fr 1fr; }
 .span-all { margin: var(--gap) clamp(16px, 3vw, 40px) 0; }
 
+/* ===================== reorderable panels (drag and drop) ===================== */
+.reorder-hint { padding: var(--gap) clamp(16px, 3vw, 40px) 4px; font-size: 11px; color: var(--fg-on-dark-dim); }
+.reorder-list { padding: 0 clamp(16px, 3vw, 40px); display: flex; flex-direction: column; gap: var(--gap); }
+.reorder-slot { position: relative; border-radius: var(--r-md); }
+.reorder-slot.drag-over { outline: 2px dashed var(--brand-orange); outline-offset: 4px; }
+.reorder-slot.dragging { opacity: 0.45; }
+.drag-handle {
+  cursor: grab; color: var(--fg-on-dark-dim); font-size: 16px; line-height: 1;
+  padding: 0 8px 0 0; margin-top: 1px; flex: 0 0 auto; align-self: flex-start; user-select: none;
+  transition: color 120ms;
+}
+.drag-handle:hover { color: var(--brand-orange); }
+.drag-handle:active { cursor: grabbing; }
+.drag-handle:focus-visible { outline: 2px solid var(--brand-orange); outline-offset: 2px; border-radius: 3px; }
+
 /* ===================== KPI CARDS ===================== */
 .kpi {
   background: var(--panel); border: 1px solid var(--panel-line); border-radius: var(--r-md);
