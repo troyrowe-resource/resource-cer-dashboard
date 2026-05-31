@@ -1,62 +1,55 @@
 "use client";
-/* Australia choropleth + postcode heat overlay, built on MapLibre GL JS with a
-   token-free blank dark style (our own GeoJSON only - no external tiles).
-   MapLibre is dynamically imported so it is lazy-loaded and never touches SSR. */
-import { useEffect, useRef, useState } from "react";
-import "maplibre-gl/dist/maplibre-gl.css";
-import type { Map as MlMap, MapGeoJSONFeature, MapSourceDataEvent, GeoJSONSource } from "maplibre-gl";
-import type { FeatureCollection } from "geojson";
+/* Australia choropleth + postcode heat overlay, rendered as plain SVG from the real
+   ABS-derived state GeoJSON. No WebGL/MapLibre worker - so it renders deterministically
+   on every load (MapLibre's worker never completed style-load on the host, leaving the
+   map blank). Boundaries are the real polygons; the projection is a simple equirectangular
+   fit (recognisable, not survey-grade), which is all a choropleth needs. */
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { Feature, FeatureCollection, Position } from "geojson";
 import type { DatasetKey, Metric, StateCode } from "@/lib/types";
 import { STATE_CODES, STATE_NAMES } from "@/lib/types";
 import { loadPostcodes } from "@/lib/data";
 
-// Heat ramp stops (low neutral -> mid -> brand orange).
-const RAMP: [number, string][] = [
-  [0, "#34323B"],
-  [0.5, "#9C6118"],
-  [1, "#FFA100"],
-];
 const GAMMA = 0.85;
+const VB_W = 1000, VB_H = 900, PAD = 16;
+// mainland + Tasmania frame (far offshore islands clip harmlessly)
+const LON0 = 112.9, LON1 = 154.0, LAT0 = -43.8, LAT1 = -10.0;
 
-/** Bake the choropleth styling (t = gamma-applied intensity, sel, dim) into each state's
-    GeoJSON properties, so the fill is driven by the data itself and renders on parse - no
-    feature-state timing race. Rebuilt and fed to setData whenever values/selection change. */
-function styledStates(
-  raw: FeatureCollection,
-  values: Record<StateCode, number>,
-  active: Partial<Record<StateCode, boolean>>,
-): FeatureCollection {
-  const max = Math.max(1, ...STATE_CODES.map((c) => values[c] || 0));
-  const anyActive = STATE_CODES.some((c) => active[c]);
-  return {
-    type: "FeatureCollection",
-    features: raw.features.map((f) => {
-      const code = (f.properties?.code ?? "") as StateCode;
-      const v = values[code] || 0;
-      return {
-        ...f,
-        properties: {
-          ...f.properties,
-          t: Math.pow(v / max, GAMMA),
-          sel: active[code] ? 1 : 0,
-          dim: anyActive && !active[code] ? 1 : 0,
-        },
-      };
-    }),
-  };
+function project(lon: number, lat: number): [number, number] {
+  const x = PAD + ((lon - LON0) / (LON1 - LON0)) * (VB_W - 2 * PAD);
+  const y = PAD + ((LAT1 - lat) / (LAT1 - LAT0)) * (VB_H - 2 * PAD);
+  return [x, y];
 }
 
-// Approximate label anchor points (lon, lat). ACT nudged east so it clears NSW.
 const LABEL_POS: Record<StateCode, [number, number]> = {
-  NSW: [147.2, -32.3],
-  VIC: [144.4, -36.9],
-  QLD: [144.3, -22.6],
-  WA: [121.5, -25.8],
-  SA: [135.4, -30.3],
-  TAS: [146.6, -42.0],
-  ACT: [150.6, -35.5],
-  NT: [133.6, -19.6],
+  NSW: [147.0, -32.3], VIC: [144.2, -36.8], QLD: [144.2, -22.6], WA: [121.5, -25.8],
+  SA: [135.3, -30.3], TAS: [146.7, -42.1], ACT: [151.6, -35.6], NT: [133.4, -19.6],
 };
+
+// heat ramp: low neutral -> mid -> brand orange
+function hx(c: string): [number, number, number] { return [parseInt(c.slice(1, 3), 16), parseInt(c.slice(3, 5), 16), parseInt(c.slice(5, 7), 16)]; }
+function toHex(r: number, g: number, b: number): string { return "#" + [r, g, b].map((v) => ("0" + Math.round(v).toString(16)).slice(-2)).join(""); }
+function ramp(t: number): string {
+  t = Math.max(0, Math.min(1, t));
+  const c0 = hx("#34323B"), c1 = hx("#9C6118"), c2 = hx("#FFA100");
+  const mix = (a: number[], b: number[], u: number) => toHex(a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u);
+  return t < 0.5 ? mix(c0, c1, t / 0.5) : mix(c1, c2, (t - 0.5) / 0.5);
+}
+
+function ringsToPath(coords: Position[][]): string {
+  let d = "";
+  for (const ring of coords) {
+    ring.forEach((pt, i) => { const [x, y] = project(pt[0], pt[1]); d += (i ? "L" : "M") + x.toFixed(1) + " " + y.toFixed(1) + " "; });
+    d += "Z ";
+  }
+  return d;
+}
+function featurePath(f: Feature): string {
+  const g = f.geometry;
+  if (g.type === "Polygon") return ringsToPath(g.coordinates);
+  if (g.type === "MultiPolygon") return g.coordinates.map(ringsToPath).join("");
+  return "";
+}
 
 export interface AusMapProps {
   metric: Metric;
@@ -72,250 +65,47 @@ export interface AusMapProps {
 interface HoverInfo { code: StateCode; x: number; y: number; }
 
 export default function AusMap(props: AusMapProps) {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const mapRef = useRef<MlMap | null>(null);
-  const readyRef = useRef(false);
-  const pcAddedRef = useRef(false);
-  const rawStatesRef = useRef<FeatureCollection | null>(null);
-  const [ready, setReady] = useState(false);
-  const [hover, setHover] = useState<HoverInfo | null>(null);
-  const [labels, setLabels] = useState<{ code: StateCode; x: number; y: number }[]>([]);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const [geo, setGeo] = useState<FeatureCollection | null>(null);
+  const [heat, setHeat] = useState<{ x: number; y: number; w: number }[]>([]);
   const [failed, setFailed] = useState(false);
-  // keep latest props for event handlers without re-binding listeners
-  const propsRef = useRef(props);
-  propsRef.current = props;
+  const [hover, setHover] = useState<HoverInfo | null>(null);
 
-  // ---- init once ----
+  // load state boundaries
   useEffect(() => {
     let cancelled = false;
-    let map: MlMap | null = null;
-
-    (async () => {
-      try {
-        const maplibregl = (await import("maplibre-gl")).default;
-        if (cancelled || !containerRef.current) return;
-
-        map = new maplibregl.Map({
-          container: containerRef.current,
-          style: {
-            version: 8,
-            sources: {},
-            layers: [{ id: "bg", type: "background", paint: { "background-color": "#131216" } }],
-          },
-          attributionControl: false,
-          dragRotate: false,
-          renderWorldCopies: false,
-          maxZoom: 7,
-          minZoom: 1,
-        });
-        mapRef.current = map;
-        // CRITICAL (blank-map bug): attach the load listener SYNCHRONOUSLY, before any await,
-        // so the 'load' event can never fire in an async gap and be missed (which hung init and
-        // left the map blank). map.loaded() alone is not enough - it can read false after 'load'.
-        const loadPromise = new Promise<void>((resolve) => {
-          if (map!.loaded()) { resolve(); return; }
-          map!.once("load", () => resolve());
-          map!.once("error", () => resolve()); // never hang on a style error
-          setTimeout(resolve, 6000); // ultimate safety net
-        });
-        console.log("[ausmap] map created");
-        // fixed choropleth: disable navigation gestures
-        map.dragPan.disable();
-        map.scrollZoom.disable();
-        map.doubleClickZoom.disable();
-        map.keyboard.disable();
-        map.touchZoomRotate.disable();
-
-        const res = await fetch("/geo/aus-states.geojson");
-        if (!res.ok) throw new Error("states geojson " + res.status);
-        const states = (await res.json()) as FeatureCollection;
-        rawStatesRef.current = states;
-        console.log("[ausmap] geojson loaded", states.features?.length);
-
-        await loadPromise;
-        console.log("[ausmap] style loaded, adding source");
-        if (cancelled) return;
-
-        // Colours are baked into the feature properties (t/sel/dim); the fill is driven by
-        // ["get","t"], so the choropleth paints the instant the source parses - no feature-state
-        // race. Selection updates via setData. Only hover (transient) uses feature-state.
-        map.addSource("states", {
-          type: "geojson",
-          data: styledStates(states, propsRef.current.stateValues, propsRef.current.active),
-          promoteId: "code",
-        });
-        map.addLayer({
-          id: "states-fill",
-          type: "fill",
-          source: "states",
-          paint: {
-            "fill-color": [
-              "interpolate", ["linear"], ["get", "t"],
-              RAMP[0][0], RAMP[0][1], RAMP[1][0], RAMP[1][1], RAMP[2][0], RAMP[2][1],
-            ],
-            "fill-opacity": ["case", ["==", ["get", "dim"], 1], 0.4, 1],
-          },
-        });
-        map.addLayer({
-          id: "states-line",
-          type: "line",
-          source: "states",
-          paint: {
-            "line-color": [
-              "case",
-              ["boolean", ["feature-state", "hover"], false], "#FFFFFF",
-              ["==", ["get", "sel"], 1], "#FFA100",
-              "#131216",
-            ],
-            "line-width": [
-              "case",
-              ["==", ["get", "sel"], 1], 2,
-              ["boolean", ["feature-state", "hover"], false], 1.4,
-              1,
-            ],
-          },
-        });
-
-        map.fitBounds([[112, -44], [154, -9.5]], { padding: 18, duration: 0 });
-
-        // interactions
-        let hoveredId: string | null = null;
-        const setHoverState = (id: string | null, on: boolean) => {
-          if (id == null) return;
-          map!.setFeatureState({ source: "states", id }, { hover: on });
-        };
-        map.on("mousemove", "states-fill", (e) => {
-          if (!e.features?.length) return;
-          const f = e.features[0] as MapGeoJSONFeature;
-          const code = f.id as StateCode;
-          if (hoveredId !== code) {
-            setHoverState(hoveredId, false);
-            hoveredId = code;
-            setHoverState(hoveredId, true);
-          }
-          map!.getCanvas().style.cursor = "pointer";
-          setHover({ code, x: e.point.x, y: e.point.y });
-        });
-        map.on("mouseleave", "states-fill", () => {
-          setHoverState(hoveredId, false);
-          hoveredId = null;
-          map!.getCanvas().style.cursor = "";
-          setHover(null);
-        });
-        map.on("click", "states-fill", (e) => {
-          if (!e.features?.length) return;
-          const code = e.features[0].id as StateCode;
-          propsRef.current.onPick(code);
-        });
-
-        const recomputeLabels = () => {
-          if (!map) return;
-          setLabels(
-            STATE_CODES.map((code) => {
-              const p = map!.project(LABEL_POS[code]);
-              return { code, x: p.x, y: p.y };
-            }),
-          );
-        };
-        recomputeLabels();
-        map.on("move", recomputeLabels);
-        map.on("resize", recomputeLabels);
-
-        // Wait until the "states" source has parsed before declaring ready, so the postcode
-        // overlay is added afterwards and selection updates (setData) target a live source.
-        // (The choropleth fill itself is already correct on parse - colours are baked into the data.)
-        await new Promise<void>((resolve) => {
-          let done = false;
-          const finish = () => { if (!done) { done = true; resolve(); } };
-          if (map!.isSourceLoaded("states")) { finish(); return; }
-          const onData = (e: MapSourceDataEvent) => {
-            if (e.sourceId === "states" && map!.isSourceLoaded("states")) { map!.off("sourcedata", onData); finish(); }
-          };
-          map!.on("sourcedata", onData);
-          map!.once("idle", finish); // fallback: first idle means the source has rendered
-        });
-        if (cancelled) return;
-
-        console.log("[ausmap] ready (source parsed, choropleth painted)");
-        readyRef.current = true;
-        setReady(true);
-      } catch (err) {
-        console.error("AusMap init failed:", err);
-        if (!cancelled) setFailed(true);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      readyRef.current = false;
-      pcAddedRef.current = false;
-      if (map) map.remove();
-      mapRef.current = null;
-    };
+    fetch("/geo/aus-states.geojson")
+      .then((r) => { if (!r.ok) throw new Error("geojson " + r.status); return r.json(); })
+      .then((g) => { if (!cancelled) setGeo(g as FeatureCollection); })
+      .catch((e) => { console.error("AusMap geojson load failed:", e); if (!cancelled) setFailed(true); });
+    return () => { cancelled = true; };
   }, []);
 
-  // ---- choropleth values + selection: re-bake colours into the source data ----
+  // postcode heat points (lazy; recomputed when dataset/metric/visibility changes)
   useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !ready || !rawStatesRef.current) return;
-    const src = map.getSource("states") as GeoJSONSource | undefined;
-    if (src) src.setData(styledStates(rawStatesRef.current, props.stateValues, props.active));
-  }, [props.stateValues, props.active, ready]);
-
-  // ---- postcode heat overlay ----
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !ready) return;
+    if (!props.showPostcode) { setHeat([]); return; }
     let cancelled = false;
-
-    (async () => {
-      try {
-        const pcFile = await loadPostcodes();
-        if (cancelled || !mapRef.current) return;
-        const weightProp = props.metric === "capacity" ? "capacity" : "installs";
-        const pts = pcFile[props.view]
-          .filter((p) => p.lat != null && p.lng != null && (p.installs > 0 || p.capacity > 0))
-          .map((p) => ({
-            type: "Feature" as const,
-            geometry: { type: "Point" as const, coordinates: [p.lng as number, p.lat as number] },
-            properties: { installs: p.installs, capacity: p.capacity },
-          }));
-        const fc = { type: "FeatureCollection" as const, features: pts };
-        const maxW = Math.max(1, ...pts.map((f) => f.properties[weightProp as "installs" | "capacity"] as number));
-
-        if (!pcAddedRef.current) {
-          map.addSource("pc", { type: "geojson", data: fc });
-          map.addLayer({
-            id: "pc-heat",
-            type: "heatmap",
-            source: "pc",
-            paint: {
-              "heatmap-weight": ["interpolate", ["linear"], ["get", weightProp], 0, 0, maxW, 1],
-              "heatmap-intensity": 1.1,
-              "heatmap-radius": 16,
-              "heatmap-opacity": 0.85,
-              "heatmap-color": [
-                "interpolate", ["linear"], ["heatmap-density"],
-                0, "rgba(0,0,0,0)",
-                0.2, "rgba(156,97,24,0.35)",
-                0.5, "rgba(255,161,0,0.6)",
-                1, "rgba(255,183,51,0.95)",
-              ],
-            },
-          });
-          pcAddedRef.current = true;
-        } else {
-          (map.getSource("pc") as GeoJSONSource).setData(fc);
-          map.setPaintProperty("pc-heat", "heatmap-weight", ["interpolate", ["linear"], ["get", weightProp], 0, 0, maxW, 1]);
-        }
-        map.setLayoutProperty("pc-heat", "visibility", props.showPostcode ? "visible" : "none");
-      } catch (err) {
-        console.error("AusMap postcode layer failed:", err);
-      }
-    })();
-
+    loadPostcodes()
+      .then((pc) => {
+        if (cancelled) return;
+        const useCapacity = props.metric === "capacity";
+        const pts = pc[props.view].filter((p) => p.lat != null && p.lng != null && (useCapacity ? p.capacity : p.installs) > 0);
+        const max = Math.max(1, ...pts.map((p) => (useCapacity ? p.capacity : p.installs)));
+        setHeat(pts.map((p) => {
+          const [x, y] = project(p.lng as number, p.lat as number);
+          return { x, y, w: Math.pow((useCapacity ? p.capacity : p.installs) / max, 0.5) };
+        }));
+      })
+      .catch((e) => console.error("AusMap postcodes failed:", e));
     return () => { cancelled = true; };
-  }, [props.showPostcode, props.view, props.metric, ready]);
+  }, [props.showPostcode, props.view, props.metric]);
+
+  const paths = useMemo(() => {
+    if (!geo) return [];
+    return geo.features
+      .map((f) => ({ code: (f.properties?.code ?? "") as StateCode, d: featurePath(f) }))
+      .filter((s) => STATE_CODES.includes(s.code));
+  }, [geo]);
 
   if (failed) {
     return (
@@ -325,27 +115,60 @@ export default function AusMap(props: AusMapProps) {
     );
   }
 
+  const max = Math.max(1, ...STATE_CODES.map((c) => props.stateValues[c] || 0));
   const anyActive = STATE_CODES.some((c) => props.active[c]);
+
+  function onMove(e: React.MouseEvent, code: StateCode) {
+    const rect = wrapRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    setHover({ code, x: e.clientX - rect.left, y: e.clientY - rect.top });
+  }
+
   return (
-    <div className="map-wrap">
-      <div className="map-canvas" ref={containerRef} aria-label={`Choropleth of ${props.metricLabel} by state`} role="img" />
-      {/* HTML state labels (no glyphs needed) */}
-      {ready && labels.map((l) => {
-        const selected = !!props.active[l.code];
-        return (
-          <span
-            key={l.code}
-            style={{
-              position: "absolute", left: l.x, top: l.y, transform: "translate(-50%, -50%)",
-              pointerEvents: "none", fontSize: l.code === "ACT" ? 10 : 12, fontWeight: 700,
-              color: selected ? "#FFA100" : anyActive ? "rgba(207,205,214,0.55)" : "#CFCDD6",
-              textShadow: "0 1px 3px rgba(0,0,0,0.8)", whiteSpace: "nowrap",
-            }}
-          >
-            {l.code}
-          </span>
-        );
-      })}
+    <div className="map-canvas" ref={wrapRef} style={{ position: "relative" }}>
+      <svg viewBox={`0 0 ${VB_W} ${VB_H}`} width="100%" height="100%" preserveAspectRatio="xMidYMid meet" style={{ display: "block" }} role="img" aria-label={`Choropleth of ${props.metricLabel} by state`}>
+        {/* state fills */}
+        {paths.map((s) => {
+          const v = props.stateValues[s.code] || 0;
+          const sel = !!props.active[s.code];
+          const dim = anyActive && !sel;
+          return (
+            <path
+              key={s.code}
+              d={s.d}
+              fillRule="evenodd"
+              fill={ramp(Math.pow(v / max, GAMMA))}
+              stroke={sel ? "#FFA100" : hover?.code === s.code ? "#FFFFFF" : "#131216"}
+              strokeWidth={sel ? 2.5 : hover?.code === s.code ? 1.6 : 1}
+              opacity={dim ? 0.45 : 1}
+              style={{ cursor: "pointer", transition: "opacity 150ms, fill 200ms" }}
+              onMouseEnter={(e) => onMove(e, s.code)}
+              onMouseMove={(e) => onMove(e, s.code)}
+              onMouseLeave={() => setHover(null)}
+              onClick={() => props.onPick(s.code)}
+            />
+          );
+        })}
+        {/* postcode heat overlay */}
+        {props.showPostcode && heat.length > 0 && (
+          <g style={{ mixBlendMode: "screen", pointerEvents: "none" }}>
+            {heat.map((h, i) => (
+              <circle key={i} cx={h.x} cy={h.y} r={1.4 + h.w * 5} fill="#FFA100" opacity={0.1 + h.w * 0.45} />
+            ))}
+          </g>
+        )}
+        {/* state labels */}
+        {paths.length > 0 && STATE_CODES.map((code) => {
+          const [x, y] = project(LABEL_POS[code][0], LABEL_POS[code][1]);
+          const sel = !!props.active[code];
+          return (
+            <text key={code} x={x} y={y} textAnchor="middle" fontSize={code === "ACT" ? 15 : 19} fontWeight={700} pointerEvents="none"
+              fill={sel ? "#FFA100" : anyActive ? "rgba(207,205,214,0.55)" : "#E7E6EA"} style={{ paintOrder: "stroke", stroke: "rgba(0,0,0,0.55)", strokeWidth: 3 }}>
+              {code}
+            </text>
+          );
+        })}
+      </svg>
       {hover && (
         <div
           style={{
@@ -358,13 +181,9 @@ export default function AusMap(props: AusMapProps) {
           <div style={{ fontSize: 12, color: "#FFF", fontWeight: 800, marginBottom: 2 }}>{STATE_NAMES[hover.code]}</div>
           <div style={{ display: "flex", justifyContent: "space-between", gap: 14, fontSize: 13 }}>
             <span style={{ color: "#9A98A4" }}>{props.metricLabel}</span>
-            <span style={{ color: "#FFA100", fontWeight: 700, fontFamily: "var(--font-mono)" }}>
-              {props.fmt(props.stateValues[hover.code] || 0)}
-            </span>
+            <span style={{ color: "#FFA100", fontWeight: 700, fontFamily: "var(--font-mono)" }}>{props.fmt(props.stateValues[hover.code] || 0)}</span>
           </div>
-          <div style={{ fontSize: 11, color: "#6A6873", marginTop: 3 }}>
-            {props.active[hover.code] ? "Selected - click to remove" : "Click to filter"}
-          </div>
+          <div style={{ fontSize: 11, color: "#6A6873", marginTop: 3 }}>{props.active[hover.code] ? "Selected - click to remove" : "Click to filter"}</div>
         </div>
       )}
     </div>
