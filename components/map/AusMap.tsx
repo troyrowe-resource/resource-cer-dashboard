@@ -4,7 +4,7 @@
    MapLibre is dynamically imported so it is lazy-loaded and never touches SSR. */
 import { useEffect, useRef, useState } from "react";
 import "maplibre-gl/dist/maplibre-gl.css";
-import type { Map as MlMap, MapGeoJSONFeature } from "maplibre-gl";
+import type { Map as MlMap, MapGeoJSONFeature, MapSourceDataEvent } from "maplibre-gl";
 import type { DatasetKey, Metric, StateCode } from "@/lib/types";
 import { STATE_CODES, STATE_NAMES } from "@/lib/types";
 import { loadPostcodes } from "@/lib/data";
@@ -172,6 +172,22 @@ export default function AusMap(props: AusMapProps) {
         recomputeLabels();
         map.on("move", recomputeLabels);
         map.on("resize", recomputeLabels);
+
+        // Wait until the "states" source has actually parsed before declaring ready.
+        // The choropleth colours are applied via feature-state in a one-shot effect that
+        // fires when `ready` flips true; if we flip it before the source loads, those
+        // setFeatureState calls are dropped and every state renders unstyled (near-black).
+        await new Promise<void>((resolve) => {
+          let done = false;
+          const finish = () => { if (!done) { done = true; resolve(); } };
+          if (map!.isSourceLoaded("states")) { finish(); return; }
+          const onData = (e: MapSourceDataEvent) => {
+            if (e.sourceId === "states" && map!.isSourceLoaded("states")) { map!.off("sourcedata", onData); finish(); }
+          };
+          map!.on("sourcedata", onData);
+          map!.once("idle", finish); // fallback: first idle means the source has rendered
+        });
+        if (cancelled) return;
 
         readyRef.current = true;
         setReady(true);
