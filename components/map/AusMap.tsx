@@ -121,7 +121,13 @@ export default function AusMap(props: AusMapProps) {
         const states = (await res.json()) as FeatureCollection;
         rawStatesRef.current = states;
 
-        await new Promise<void>((resolve) => map!.on("load", () => resolve()));
+        // CRITICAL: 'load' can fire during the await fetch above. Guard with map.loaded() so we
+        // never wait on an event that has already passed - otherwise init hangs forever and the
+        // map stays blank (this was the intermittent black-map bug). once() also avoids a leak.
+        await new Promise<void>((resolve) => {
+          if (map!.loaded()) resolve();
+          else map!.once("load", () => resolve());
+        });
         if (cancelled) return;
 
         // Colours are baked into the feature properties (t/sel/dim); the fill is driven by
