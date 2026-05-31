@@ -31,13 +31,14 @@ mismatch, and this build sandbox cannot regenerate the lock). To remove it on yo
 `npm uninstall maplibre-gl`, then commit the updated `package.json` + `package-lock.json`.
 
 ## Where the repository lives (important)
-The committed, push-ready git repository is at **`C:\Users\TroyRowe\Documents\resource-cer-dashboard`**.
-A short path is required because Git on Windows cannot operate inside the very long Cowork
-session-output path (it fails with "Filename too long" / "Result too large"). The copy under the
-Cowork outputs folder is the build/working copy (it also has `node_modules` installed and was the
-one tested); the Documents copy is the identical source, git-initialised and committed, ready to
-push. Use the **Documents** copy for GitHub and Vercel - the steps in HOSTING-ON-VERCEL.md assume
-you are working in it.
+The repository now lives at **`C:\Users\TroyRowe\ReSource Pty Ltd\ReSource - Troy Rowe\Claude\Code\resource-cer-dashboard`**
+- your OneDrive-synced `Claude\Code` workspace (alongside other projects). It is the single, self-contained
+copy: full source, the git repository (history + GitHub remote), and `node_modules`. Edit, build, commit and
+push all happen here; this path is short enough for Git and Node to run directly. It replaced the earlier
+`C:\Users\TroyRowe\Documents\resource-cer-dashboard` copy, which existed only because Git could not operate
+inside the very long Cowork session-output path; that Documents copy has been removed. Because this folder is
+OneDrive-synced, `node_modules` will sync in the background - harmless, but expect some sync activity after an
+`npm install`.
 
 ## Decisions that need a glance (none blocking)
 
